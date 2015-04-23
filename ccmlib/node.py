@@ -1055,7 +1055,8 @@ class Node(object):
         if self.network_interfaces['binary'] is not None and self.get_base_cassandra_version() >= 1.2:
             _, data['native_transport_port'] = self.network_interfaces['binary']
 
-        data['data_file_directories'] = [os.path.join(self.get_path(), 'data')]
+        data['data_file_directories'] = [os.path.join(self.get_path(), 'data1'),
+            os.path.join(self.get_path(), 'data2')]
         data['commitlog_directory'] = os.path.join(self.get_path(), 'commitlogs')
         data['saved_caches_directory'] = os.path.join(self.get_path(), 'saved_caches')
 
