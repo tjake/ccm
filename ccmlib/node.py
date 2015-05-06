@@ -305,7 +305,7 @@ class Node(object):
                 if m:
                     matchings.append([line])
                     try:
-                        while line.find("INFO", 0, 5) < 0:
+                        while line.find("INFO") < 0:
                             line = f.next()
                             matchings[-1].append(line)
                     except StopIteration:
@@ -329,8 +329,6 @@ class Node(object):
             [stdout, stderr] = proc.communicate()
         except ValueError:
             [stdout, stderr] = ['', '']
-        if verbose:
-            print_("[%s] %s" % (name, stdout.strip()))
         if len(stderr) > 1:
             print_("[%s ERROR] %s" % (name, stderr.strip()))
 
@@ -499,25 +497,20 @@ class Node(object):
         env['JVM_EXTRA_OPTS'] = env.get('JVM_EXTRA_OPTS', "") + " ".join(jvm_args)
 
         process = None
+        FNULL = open(os.devnull, 'w')
         if common.is_win():
             # clean up any old dirty_pid files from prior runs
             if (os.path.isfile(self.get_path() + "/dirty_pid.tmp")):
                 os.remove(self.get_path() + "/dirty_pid.tmp")
-            process = subprocess.Popen(args, cwd=self.get_bin_dir(), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            process = subprocess.Popen(args, cwd=self.get_bin_dir(), env=env, stdout=FNULL, stderr=subprocess.PIPE)
         else:
-            process = subprocess.Popen(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
+            process = subprocess.Popen(args, env=env, stdout=FNULL, stderr=subprocess.PIPE)
         # Our modified batch file writes a dirty output with more than just the pid - clean it to get in parity
         # with *nix operation here.
         if common.is_win():
             self.__clean_win_pid()
             self._update_pid(process)
         elif update_pid:
-            if not no_wait:
-                for line in process.stdout:
-                    if verbose:
-                        print_(line.rstrip('\n'))
-
             self._update_pid(process)
 
             if not self.is_running():
@@ -677,10 +670,11 @@ class Node(object):
                     p.stdin.write(cmd + ';\n')
             p.stdin.write("quit;\n")
             p.wait()
-            for err in p.stderr:
-                print_("(EE) ", err, end='')
 
             output = (p.stdout.read(), p.stderr.read())
+
+            for err in output[1].split('\n'):
+                print_("(EE) ", err, end='')
 
             if show_output:
                 print_(output[0], end='')
@@ -1132,13 +1126,16 @@ class Node(object):
     def __update_envfile(self):
         if common.is_win():
             jmx_port_pattern = '^\s+\$JMX_PORT='
+            conf_file = os.path.join(self.get_conf_dir(), common.CASSANDRA_WIN_ENV)
+            remote_debug_options = '    $env:JVM_OPTS="$env:JVM_OPTS -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=' + str(self.remote_debug_port) + '"'
         else:
             jmx_port_pattern = 'JMX_PORT='
-        remote_debug_port_pattern = '-Xrunjdwp:transport=dt_socket,server=y,suspend=n,address='
-        conf_file = os.path.join(self.get_conf_dir(), common.CASSANDRA_ENV)
+            conf_file = os.path.join(self.get_conf_dir(), common.CASSANDRA_ENV)
+            remote_debug_options = 'JVM_OPTS="$JVM_OPTS -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=' + str(self.remote_debug_port) + '"'
+        remote_debug_port_pattern = '((-Xrunjdwp:)|(-agentlib:jdwp=))transport=dt_socket,server=y,suspend=n,address='
         common.replace_in_file(conf_file, jmx_port_pattern, jmx_port_pattern + self.jmx_port)
         if self.remote_debug_port != '0':
-            common.replace_in_file(conf_file, remote_debug_port_pattern, 'JVM_OPTS="$JVM_OPTS -Xdebug -Xnoagent -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=' + str(self.remote_debug_port) + '"')
+            common.replace_in_file(conf_file, remote_debug_port_pattern, remote_debug_options)
 
         if self.get_cassandra_version() < '2.0.1':
             common.replace_in_file(conf_file, "-Xss", '    JVM_OPTS="$JVM_OPTS -Xss228k"')
@@ -1360,10 +1357,26 @@ class Node(object):
             return None
 
     def pause(self):
-        os.kill(self.pid, signal.SIGSTOP)
+        try:
+            import psutil
+            p = psutil.Process(self.pid)
+            p.suspend()
+        except ImportError:
+            if common.is_win():
+                print_("WARN: psutil not installed. Pause functionality will not work properly on Windows.")
+            else:
+                os.kill(self.pid, signal.SIGSTOP)
 
     def resume(self):
-        os.kill(self.pid, signal.SIGCONT)
+        try:
+            import psutil
+            p = psutil.Process(self.pid)
+            p.resume()
+        except ImportError:
+            if common.is_win():
+                print_("WARN: psutil not installed. Resume functionality will not work properly on Windows.")
+            else:
+                os.kill(self.pid, signal.SIGCONT)
 
 def _get_load_from_info_output(info):
     load_lines = [s for s in info.split('\n')

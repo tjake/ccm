@@ -100,6 +100,8 @@ class ClusterCreateCmd(Cmd):
             help="Path to keystore.jks and cassandra.crt files (and truststore.jks [not required])", default=None)
         parser.add_option('--require_client_auth', action="store_true", dest="require_client_auth",
             help="Enable client authentication (only vaid with --ssl)", default=False)
+        parser.add_option('--node-ssl', type="string", dest="node_ssl_path",
+            help="Path to keystore.jks and truststore.jks for internode encryption", default=None)
         return parser
 
     def validate(self, parser, options, args):
@@ -152,23 +154,26 @@ class ClusterCreateCmd(Cmd):
         if self.options.ssl_path:
             cluster.enable_ssl(self.options.ssl_path, self.options.require_client_auth)
 
+        if self.options.node_ssl_path:
+            cluster.enable_internode_ssl(self.options.node_ssl_path)
+
         if self.nodes is not None:
             try:
                 if self.options.debug_log:
                     cluster.set_log_level("DEBUG")
                 if self.options.trace_log:
                     cluster.set_log_level("TRACE")
-                cluster.populate(self.nodes, use_vnodes=self.options.vnodes, ipprefix=self.options.ipprefix, ipformat=self.options.ipformat)
+                cluster.populate(self.nodes, self.options.debug, use_vnodes=self.options.vnodes, ipprefix=self.options.ipprefix, ipformat=self.options.ipformat)
                 if self.options.start_nodes:
                     profile_options = None
                     if self.options.profile:
                         profile_options = {}
                         if self.options.profile_options:
                             profile_options['options'] = self.options.profile_options
-                    if cluster.start(verbose=self.options.debug, wait_for_binary_proto=self.options.binary_protocol, jvm_args=self.options.jvm_args, profile_options=profile_options) is None:
+                    if cluster.start(verbose=self.options.debug_log, wait_for_binary_proto=self.options.binary_protocol, jvm_args=self.options.jvm_args, profile_options=profile_options) is None:
                         details = ""
-                        if not self.options.debug:
-                            details = " (you can use --debug for more information)"
+                        if not self.options.debug_log:
+                            details = " (you can use --debug-log for more information)"
                         print_("Error starting nodes, see above for details%s" % details, file=sys.stderr)
             except common.ArgumentError as e:
                 print_(str(e), file=sys.stderr)
