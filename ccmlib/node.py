@@ -1221,7 +1221,7 @@ class Node(object):
 
     def _get_directories(self):
         dirs = {}
-        for i in ['data', 'commitlogs', 'saved_caches', 'logs', 'conf', 'bin']:
+        for i in ['data1', 'data2', 'commitlogs', 'saved_caches', 'logs', 'conf', 'bin']:
             dirs[i] = os.path.join(self.get_path(), i)
         return dirs
 
