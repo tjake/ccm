@@ -197,8 +197,18 @@ class DseNode(Node):
         p = subprocess.Popen(args, env=env)
         p.wait()
 
+    def dse(self, dse_options=[]):
+        env = common.make_dse_env(self.get_install_dir(), self.get_path())
+        env['JMX_PORT'] = self.jmx_port
+        dse = common.join_bin(self.get_install_dir(), 'bin', 'dse')
+        args = [dse]
+        args += dse_options
+        p = subprocess.Popen(args, env=env)
+        p.wait()
+
     def hadoop(self, hadoop_options=[]):
         env = common.make_dse_env(self.get_install_dir(), self.get_path())
+        env['JMX_PORT'] = self.jmx_port
         dse = common.join_bin(self.get_install_dir(), 'bin', 'dse')
         args = [dse, 'hadoop']
         args += hadoop_options
@@ -207,6 +217,7 @@ class DseNode(Node):
 
     def hive(self, hive_options=[]):
         env = common.make_dse_env(self.get_install_dir(), self.get_path())
+        env['JMX_PORT'] = self.jmx_port
         dse = common.join_bin(self.get_install_dir(), 'bin', 'dse')
         args = [dse, 'hive']
         args += hive_options
@@ -215,6 +226,7 @@ class DseNode(Node):
 
     def pig(self, pig_options=[]):
         env = common.make_dse_env(self.get_install_dir(), self.get_path())
+        env['JMX_PORT'] = self.jmx_port
         dse = common.join_bin(self.get_install_dir(), 'bin', 'dse')
         args = [dse, 'pig']
         args += pig_options
@@ -223,6 +235,7 @@ class DseNode(Node):
 
     def sqoop(self, sqoop_options=[]):
         env = common.make_dse_env(self.get_install_dir(), self.get_path())
+        env['JMX_PORT'] = self.jmx_port
         dse = common.join_bin(self.get_install_dir(), 'bin', 'dse')
         args = [dse, 'sqoop']
         args += sqoop_options
@@ -231,6 +244,7 @@ class DseNode(Node):
 
     def spark(self, spark_options=[]):
         env = common.make_dse_env(self.get_install_dir(), self.get_path())
+        env['JMX_PORT'] = self.jmx_port
         dse = common.join_bin(self.get_install_dir(), 'bin', 'dse')
         args = [dse, 'spark']
         args += spark_options
@@ -301,6 +315,28 @@ class DseNode(Node):
 
         with open(conf_file, 'w') as f:
             yaml.safe_dump(data, f, default_flow_style=False)
+
+    def _update_log4j(self):
+        super(DseNode, self)._update_log4j()
+
+        conf_file = os.path.join(self.get_conf_dir(), common.LOG4J_CONF)
+        append_pattern = 'log4j.appender.V.File='
+        log_file = os.path.join(self.get_path(), 'logs', 'solrvalidation.log')
+        if common.is_win():
+            log_file = re.sub("\\\\", "/", log_file)
+        common.replace_in_file(conf_file, append_pattern, append_pattern + log_file)
+
+        append_pattern = 'log4j.appender.A.File='
+        log_file = os.path.join(self.get_path(), 'logs', 'audit.log')
+        if common.is_win():
+            log_file = re.sub("\\\\", "/", log_file)
+        common.replace_in_file(conf_file, append_pattern, append_pattern + log_file)
+
+        append_pattern = 'log4j.appender.B.File='
+        log_file = os.path.join(self.get_path(), 'logs', 'audit', 'dropped-events.log')
+        if common.is_win():
+            log_file = re.sub("\\\\", "/", log_file)
+        common.replace_in_file(conf_file, append_pattern, append_pattern + log_file)
 
     def __generate_server_xml(self):
         server_xml = os.path.join(self.get_path(), 'resources', 'tomcat', 'conf', 'server.xml')

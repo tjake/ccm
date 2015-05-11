@@ -47,8 +47,12 @@ class NodetoolError(Exception):
         self.stderr = stderr
 
         message = "Nodetool command '%s' failed; exit status: %d" % (command, exit_status)
-        if stdout is not None and stderr is not None:
-            message += "; stdout: %s; stderr: %s" % (stdout, stderr)
+        if stdout:
+            message += "; stdout: "
+            message += stdout
+        if stderr:
+            message += "; stderr: "
+            message += stderr
 
         Exception.__init__(self, message)
 
@@ -496,6 +500,10 @@ class Node(object):
             args.append('-Dcassandra.boot_without_jna=true')
         env['JVM_EXTRA_OPTS'] = env.get('JVM_EXTRA_OPTS', "") + " ".join(jvm_args)
 
+        #In case we are restarting a node
+        #we risk reading the old cassandra.pid file
+        self._delete_old_pid()
+
         process = None
         FNULL = open(os.devnull, 'w')
         if common.is_win():
@@ -579,7 +587,7 @@ class Node(object):
         else:
             return False
 
-    def nodetool(self, cmd, capture_output=False):
+    def nodetool(self, cmd, capture_output=True):
         env = common.make_cassandra_env(self.get_install_cassandra_root(), self.get_node_cassandra_root())
         nodetool = self.get_tool('nodetool')
         args = [nodetool, '-h', 'localhost', '-p', str(self.jmx_port)]
@@ -599,6 +607,9 @@ class Node(object):
 
     def dsetool(self, cmd):
         raise common.ArgumentError('Cassandra nodes do not support dsetool')
+
+    def dse(self, dse_options=[]):
+        raise common.ArgumentError('Cassandra nodes do not support dse')
 
     def hadoop(self, hadoop_options=[]):
         raise common.ArgumentError('Cassandra nodes do not support hadoop')
@@ -702,7 +713,7 @@ class Node(object):
             self.__global_log_level = new_level
         # loggers changed > 2.1
         if self.get_base_cassandra_version() < 2.1:
-            self.__update_log4j()
+            self._update_log4j()
         else:
             self.__update_logback()
         return self
@@ -924,7 +935,7 @@ class Node(object):
         self.__update_yaml()
         # loggers changed > 2.1
         if self.get_base_cassandra_version() < 2.1:
-            self.__update_log4j()
+            self._update_log4j()
         else:
             self.__update_logback()
         self.__update_envfile()
@@ -991,7 +1002,7 @@ class Node(object):
         self.__update_yaml()
         # loggers changed > 2.1
         if self.get_base_cassandra_version() < 2.1:
-            self.__update_log4j()
+            self._update_log4j()
         else:
             self.__update_logback()
         self.__update_envfile()
@@ -1079,7 +1090,7 @@ class Node(object):
         with open(conf_file, 'w') as f:
             yaml.safe_dump(data, f, default_flow_style=False)
 
-    def __update_log4j(self):
+    def _update_log4j(self):
         append_pattern = 'log4j.appender.R.File='
         conf_file = os.path.join(self.get_conf_dir(), common.LOG4J_CONF)
         log_file = os.path.join(self.get_path(), 'logs', 'system.log')
@@ -1125,16 +1136,20 @@ class Node(object):
 
     def __update_envfile(self):
         if common.is_win():
-            jmx_port_pattern = '^\s+\$JMX_PORT='
             conf_file = os.path.join(self.get_conf_dir(), common.CASSANDRA_WIN_ENV)
+            jmx_port_pattern = '^\s+\$JMX_PORT='
+            jmx_port_setting = '    $JMX_PORT="' + self.jmx_port + '"'
             remote_debug_options = '    $env:JVM_OPTS="$env:JVM_OPTS -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=' + str(self.remote_debug_port) + '"'
         else:
-            jmx_port_pattern = 'JMX_PORT='
             conf_file = os.path.join(self.get_conf_dir(), common.CASSANDRA_ENV)
+            jmx_port_pattern = 'JMX_PORT='
+            jmx_port_setting = 'JMX_PORT="' + self.jmx_port + '"'
             remote_debug_options = 'JVM_OPTS="$JVM_OPTS -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=' + str(self.remote_debug_port) + '"'
-        remote_debug_port_pattern = '((-Xrunjdwp:)|(-agentlib:jdwp=))transport=dt_socket,server=y,suspend=n,address='
-        common.replace_in_file(conf_file, jmx_port_pattern, jmx_port_pattern + self.jmx_port)
+
+        common.replace_in_file(conf_file, jmx_port_pattern, jmx_port_setting)
+
         if self.remote_debug_port != '0':
+            remote_debug_port_pattern = '((-Xrunjdwp:)|(-agentlib:jdwp=))transport=dt_socket,server=y,suspend=n,address='
             common.replace_in_file(conf_file, remote_debug_port_pattern, remote_debug_options)
 
         if self.get_cassandra_version() < '2.0.1':
@@ -1273,6 +1288,11 @@ class Node(object):
             except Exception as e:
                 print_("ERROR: Problem starting " + self.name + " (" + str(e) + ")")
                 raise Exception('Error while parsing <node>/dirty_pid.tmp in path: ' + self.get_path())
+
+    def _delete_old_pid(self):
+        pidfile = os.path.join(self.get_path(), 'cassandra.pid')
+        if os.path.isfile(pidfile):
+            os.remove(pidfile)
 
     def _update_pid(self, process):
         pidfile = os.path.join(self.get_path(), 'cassandra.pid')
