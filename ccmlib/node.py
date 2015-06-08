@@ -7,6 +7,7 @@ from six.moves import xrange
 from datetime import datetime
 import errno
 import glob
+import itertools
 import os
 import re
 import shutil
@@ -69,7 +70,7 @@ class Node(object):
         Create a new Node.
           - name: the name for that node
           - cluster: the cluster this node is part of
-          - auto_bootstrap: whether or not this node should be set for auto-boostrap
+          - auto_bootstrap: whether or not this node should be set for auto-bootstrap
           - thrift_interface: the (host, port) tuple for thrift
           - storage_interface: the (host, port) tuple for internal cluster communication
           - jmx_port: the port for JMX to bind to
@@ -300,21 +301,8 @@ class Node(object):
         Returns a list of errors with stack traces
         in the Cassandra log of this node
         """
-        expr = "ERROR"
-        matchings = []
-        pattern = re.compile(expr)
         with open(self.logfilename()) as f:
-            for line in f:
-                m = pattern.search(line)
-                if m:
-                    matchings.append([line])
-                    try:
-                        while line.find("INFO") < 0:
-                            line = f.next()
-                            matchings[-1].append(line)
-                    except StopIteration:
-                        break
-        return matchings
+            return _grep_log_for_errors(f.read())
 
     def mark_log(self):
         """
@@ -461,6 +449,8 @@ class Node(object):
         if wait_other_notice:
             marks = [(node, node.mark_log()) for node in list(self.cluster.nodes.values()) if node.is_running()]
 
+        self.mark = self.mark_log()
+
         cdir = self.get_install_dir()
         launch_bin = common.join_bin(cdir, 'bin', 'cassandra')
         # Copy back the cassandra scripts since profiling may have modified it the previous time
@@ -518,6 +508,7 @@ class Node(object):
         if common.is_win():
             self.__clean_win_pid()
             self._update_pid(process)
+            print_("Started: {0} with pid: {1}".format(self.name, self.pid), file=sys.stderr, flush=True)
         elif update_pid:
             self._update_pid(process)
 
@@ -529,7 +520,7 @@ class Node(object):
                 node.watch_log_for_alive(self, from_mark=mark)
 
         if wait_for_binary_proto and self.cluster.version() >= '1.2':
-            self.watch_log_for("Starting listening for CQL clients")
+            self.watch_log_for("Starting listening for CQL clients", from_mark=self.mark)
             # we're probably fine at that point but just wait some tiny bit more because
             # the msg is logged just before starting the binary protocol server
             time.sleep(0.2)
@@ -753,7 +744,7 @@ class Node(object):
                             if os.path.isfile(full_path):
                                 os.remove(full_path)
             else:
-                shutil.rmtree(full_dir)
+                common.rmdirs(full_dir)
                 os.mkdir(full_dir)
 
     def run_sstable2json(self, out_file=None, keyspace=None, datafiles=None, column_families=None, enumerate_keys=False):
@@ -802,28 +793,87 @@ class Node(object):
             do_split(sstablefile)
 
     def run_sstablemetadata(self, output_file=None, datafiles=None, keyspace=None, column_families=None):
-        sstablemetadata = self._find_cmd('sstablemetadata')
-        env = common.make_cassandra_env(self.get_install_cassandra_root(), self.get_node_cassandra_root())
-        sstablefiles = self.__gather_sstables(datafiles, keyspace, column_families)
+        cdir = self.get_install_dir()
+        sstablemetadata = common.join_bin(cdir, os.path.join('tools', 'bin'), 'sstablemetadata')
+        env = common.make_cassandra_env(cdir, self.get_path())
+        sstablefiles = self.__gather_sstables(datafiles=datafiles, keyspace=keyspace, columnfamilies=column_families)
+        results = []
 
         for sstable in sstablefiles:
             cmd = [sstablemetadata, sstable]
-            if output_file is None:
-                subprocess.call(cmd, env=env)
+            if output_file == None:
+                p = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+                (out, err) = p.communicate()
+                rc = p.returncode
+                results.append((out, err, rc))
             else:
                 subprocess.call(cmd, env=env, stdout=output_file)
+        if output_file == None:
+            return results
 
     def run_sstablerepairedset(self, set_repaired=True, datafiles=None, keyspace=None, column_families=None):
-        sstablerepairedset = self._find_cmd('sstablerepairedset')
-        env = common.make_cassandra_env(self.get_install_cassandra_root(), self.get_node_cassandra_root())
+        cdir = self.get_install_dir()
+        sstablerepairedset = common.join_bin(cdir, os.path.join('tools', 'bin'), 'sstablerepairedset')
+        env = common.make_cassandra_env(cdir, self.get_path())
         sstablefiles = self.__gather_sstables(datafiles, keyspace, column_families)
 
         for sstable in sstablefiles:
-            if set_repaired:
-                cmd = [sstablerepairedset, "--really-set", "--is-repaired", sstable]
+            if set_repaired == True:
+                cmd = [sstablerepairedset,"--really-set", "--is-repaired", sstable]
             else:
                 cmd = [sstablerepairedset, "--really-set", "--is-unrepaired", sstable]
             subprocess.call(cmd, env=env)
+
+
+    def run_sstablelevelreset(self, keyspace, cf, output=False):
+        cdir = self.get_install_dir()
+        sstablelevelreset = common.join_bin(cdir, os.path.join('tools', 'bin'), 'sstablelevelreset')
+        env = common.make_cassandra_env(cdir, self.get_path())
+
+        cmd = [sstablelevelreset, "--really-reset", keyspace, cf]
+
+        if output==True:
+            p = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+            (stdout, stderr) = p.communicate()
+            rc = p.returncode
+            return (stdout, stderr, rc)
+        else:
+            return subprocess.call(cmd, env=env)
+
+    def run_sstableofflinerelevel(self, keyspace, cf, dry_run=False, output=False):
+        cdir = self.get_install_dir()
+        sstableofflinerelevel = common.join_bin(cdir, os.path.join('tools', 'bin'), 'sstableofflinerelevel')
+        env = common.make_cassandra_env(cdir, self.get_path())
+
+        if dry_run==True:
+            cmd = [sstableofflinerelevel, keyspace, cf]
+        else:
+            cmd = [sstableofflinerelevel, "--dry-run", keyspace, cf]
+
+        if output == True:
+            p = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+            (stdout, stderr) = p.communicate()
+            rc = p.returncode
+            return (stdout, stderr, rc)
+        else:
+            return subprocess.call(cmd, env=env)
+
+    def run_sstableverify(self, keyspace, cf, options=None, output=False):
+        cdir = self.get_install_dir()
+        sstableverify = common.join_bin(cdir, 'bin', 'sstableverify')
+        env = common.make_cassandra_env(cdir, self.get_path())
+
+        cmd = [sstableverify, keyspace, cf]
+        if options!=None:
+            cmd[1:1] = options
+
+        if output == True:
+            p = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+            (stdout, stderr) = p.communicate()
+            rc = p.returncode
+            return (stdout, stderr, rc)
+        else:
+            return subprocess.call(cmd, env=env)
 
     def _find_cmd(self, cmd):
         """
@@ -850,14 +900,18 @@ class Node(object):
         keyspace_dir = os.path.join(self.get_path(), 'data', keyspace)
         cf_glob = '*'
         if column_family:
-            cf_glob = column_family + '-*'
+            # account for changes in data dir layout from CASSANDRA-5202
+            if self.get_base_cassandra_version() < 2.1:
+                cf_glob = column_family
+            else:
+                cf_glob = column_family + '-*'
         if not os.path.exists(keyspace_dir):
             raise common.ArgumentError("Unknown keyspace {0}".format(keyspace))
 
         # data directory layout is changed from 1.1
         if self.get_base_cassandra_version() < 1.1:
             files = glob.glob(os.path.join(keyspace_dir, "{0}*-Data.db".format(column_family)))
-        elif self.get_base_cassandra_version() < 3.0:
+        elif self.get_base_cassandra_version() < 2.2:
             files = glob.glob(os.path.join(keyspace_dir, cf_glob, "%s-%s*-Data.db" % (keyspace, column_family)))
         else:
             files = glob.glob(os.path.join(keyspace_dir, cf_glob, "*big-Data.db"))
@@ -1135,7 +1189,8 @@ class Node(object):
             common.replace_or_add_into_file_tail(conf_file, full_logger_pattern, logger_pattern + class_name + '" level="' + self.__classes_log_level[class_name] + '"/>')
 
     def __update_envfile(self):
-        if common.is_win():
+        # The cassandra-env.ps1 file has been introduced in 2.1
+        if common.is_win() and self.get_base_cassandra_version() >= 2.1:
             conf_file = os.path.join(self.get_conf_dir(), common.CASSANDRA_WIN_ENV)
             jmx_port_pattern = '^\s+\$JMX_PORT='
             jmx_port_setting = '    $JMX_PORT="' + self.jmx_port + '"'
@@ -1425,3 +1480,20 @@ def _get_load_from_info_output(info):
         raise RuntimeError(msg)
 
     return float(load_num) * load_mult
+
+
+def _grep_log_for_errors(log):
+    matchings = []
+    it = iter(log.splitlines())
+    for line in it:
+        is_error_line = ('ERROR' in line
+                         and 'DEBUG' not in line.split('ERROR')[0])
+        if is_error_line:
+            matchings.append([line])
+            try:
+                it, peeker = itertools.tee(it)
+                while 'INFO' not in next(peeker):
+                    matchings[-1].append(next(it))
+            except StopIteration:
+                break
+    return matchings

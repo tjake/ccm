@@ -121,12 +121,24 @@ def replaces_or_add_into_file_tail(file, replacement_list):
                     if match:
                         line = replace + "\n"
                         is_line_found = True
-                f_tmp.write(line)
+                if "</configuration>" not in line:
+                    f_tmp.write(line)
             # In case, entry is not found, and need to be added
             if is_line_found == False:
-                f_tmp.write('\n'+ replace + "\n")
+                f_tmp.write('\n' + replace + "\n")
+            # We are moving the closing tag to the end of the file.
+            # Previously, we were having an issue where new lines we wrote
+            # were appearing after the closing tag, and thus being ignored.
+            f_tmp.write("</configuration>\n")
 
     shutil.move(file_tmp, file)
+
+def rmdirs(path):
+    if is_win():
+        # Handle Windows 255 char limit
+        shutil.rmtree(u"\\\\?\\" + path)
+    else:
+        shutil.rmtree(path)
 
 def make_cassandra_env(install_dir, node_path):
     if is_win() and get_version_from_build(node_path=node_path) >= '2.1':
@@ -472,4 +484,4 @@ def is_dse_cluster(path):
         return False
 
 def invalidate_cache():
-    shutil.rmtree(os.path.join(get_default_path(), 'repository'))
+    rmdirs(os.path.join(get_default_path(), 'repository'))
